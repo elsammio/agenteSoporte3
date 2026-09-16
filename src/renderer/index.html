@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Desktop Agent</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Todo el <body> es transparente por defecto (ver style.css).
+       Solo #bubble y #character son "interactivos" (capturan el mouse);
+       el resto de la ventana deja pasar los clics hacia el escritorio. -->
+
+  <div id="bubble" class="interactive hidden">
+    <div id="bubble-log" aria-live="polite"></div>
+    <form id="bubble-form">
+      <input id="bubble-input" type="text" autocomplete="off" placeholder="Escríbele algo..." />
+      <button type="submit" aria-label="Enviar">➤</button>
+    </form>
+  </div>
+
+  <!-- Sin "title": el tooltip nativo del sistema operativo no se puede
+       personalizar y se ve como una caja negra fuera de lugar sobre un
+       personaje flotante sin ventana. El estado del personaje (insignia +
+       brillo de color) ya comunica visualmente qué está pasando. -->
+  <div id="character" class="interactive state-idle">
+    <div id="character-shadow"></div>
+    <img id="character-img" src="assets/peacock.png" alt="Agente" draggable="false" />
+    <!-- Insignia pequeña que indica el "estado de ánimo" del agente
+         (pensando, escuchando, error, saludo). Su contenido lo pone
+         renderer.js según el estado actual. -->
+    <div id="status-badge" aria-hidden="true"></div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
