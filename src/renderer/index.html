@@ -12,6 +12,15 @@
        el resto de la ventana deja pasar los clics hacia el escritorio. -->
 
   <div id="bubble" class="interactive hidden">
+    <div id="bubble-header">
+      <span id="bubble-title">Asistente</span>
+      <div id="bubble-header-actions">
+        <!-- Ícono estilo "minimizar" de Windows: oculta todo el personaje
+             (no solo la burbuja), igual que el clic derecho sobre él. -->
+        <button id="bubble-minimize" type="button" aria-label="Minimizar (ocultar agente)"><span class="icon-line"></span></button>
+        <button id="bubble-close" type="button" aria-label="Cerrar">✕</button>
+      </div>
+    </div>
     <div id="bubble-log" aria-live="polite"></div>
     <form id="bubble-form">
       <input id="bubble-input" type="text" autocomplete="off" placeholder="Escríbele algo..." />

@@ -56,10 +56,13 @@ msagent-electron/
 
 **Seguridad:** el renderer corre con `contextIsolation: true` y
 `nodeIntegration: false`. Nunca toca Node.js directamente; todo pasa por
-`preload.js`, que expone solo tres funciones controladas
-(`setIgnoreMouse`, `sendMessage`, `quit`). Esto importa especialmente
-porque más adelante el personaje mostrará respuestas que vienen de un LLM —
-no quieres que texto generado por IA pueda ejecutar código en tu PC.
+`preload.js`, que expone solo un puñado de funciones controladas
+(`setIgnoreMouse`, `sendMessage`, `dragStart/dragMove/dragEnd`,
+`showContextMenu`, `quit`). Esto importa especialmente porque el personaje
+muestra respuestas que vienen de un LLM — no quieres que texto generado por
+IA pueda ejecutar código en tu PC (por eso el Markdown de las respuestas se
+renderiza con un parser propio que escapa HTML antes de interpretarlo, ver
+sección 6).
 
 ## 3. Cómo ejecutarlo en Windows
 
@@ -173,10 +176,68 @@ quites esa línea de configuración).
   abre/cierra la burbuja, y un arrastre normal mueve la ventana; ambos
   funcionan de forma confiable.
 - Estado del proyecto: (1) ✅ n8n + Qdrant corriendo en Docker en tu
-  servidor Linux, (2) ✅ workflows de n8n creados — "Ingesta de documentos"
-  (PDF/Word/TXT → Qdrant) y "Chat del agente" (Webhook → Qdrant → Gemini →
-  respuesta), (3) ✅ `main.js` ahora llama de verdad al webhook de
-  producción de n8n en vez de responder con un eco simulado. Pendiente:
-  (4) pulir el personaje (sprites, más expresiones, arranque automático con
-  Windows), (5) cuando quieras, agregar más fuentes a la base de
-  conocimiento y exponer n8n a internet con dominio + HTTPS.
+  servidor Linux (con IP fija `192.168.105.129` en el VM), (2) ✅ workflows
+  de n8n creados — "Ingesta de documentos" (PDF → Qdrant, con soporte para
+  varios PDFs en un solo envío) y "Chat del agente" (Webhook → Qdrant →
+  Gemini → respuesta), (3) ✅ `main.js` llama de verdad al webhook de
+  producción de n8n, (4) ✅ base de conocimiento cargada y probada
+  end-to-end desde la app, (5) ✅ burbuja de chat rediseñada (ver sección 6).
+  Pendiente: arranque automático con Windows, y cuando quieras, seguir
+  agregando fuentes a la base de conocimiento y exponer n8n a internet con
+  dominio + HTTPS.
+
+## 6. Chat más profesional (rediseño de la burbuja)
+
+La burbuja de chat se rediseñó para que se vea y se sienta como una app de
+mensajería real, no como una caja de texto genérica:
+
+- **Encabezado propio**: la burbuja ahora tiene una franja superior azul
+  con el título "Asistente" y un botón ✕ para cerrarla sin necesidad de
+  volver a hacer clic sobre el personaje (`#bubble-header` en
+  `index.html`/`style.css`).
+- **Burbujas de mensaje estilo WhatsApp**: cada mensaje (tuyo o del agente)
+  se dibuja como una burbuja independiente, alineada a la derecha (tú, en
+  azul) o a la izquierda (el agente, en celeste claro), con una esquina
+  "recortada" que simula la colita de la burbuja — igual que en WhatsApp o
+  Telegram (clases `.msg`, `.msg-user`, `.msg-agent` en `style.css`).
+- **Markdown real en las respuestas del agente**: si Gemini responde con
+  `**negrita**`, `*cursiva*`, listas con `-`/`*` o listas numeradas
+  (`1.`, `2.`...), ahora se ven formateadas de verdad (negrita, cursiva,
+  viñetas) en vez de mostrar los símbolos tal cual. Esto lo hace un parser
+  de Markdown escrito a mano en `renderer.js` (función
+  `renderMarkdownToHtml`) — no se usó ninguna librería externa porque la
+  política de seguridad de la app (`Content-Security-Policy: script-src
+  'self'`) bloquea cargar scripts de internet, y este sandbox de
+  desarrollo tampoco tiene acceso al registro de npm. El parser primero
+  **escapa** todo el texto (convierte `<`, `>`, `&`, `"` a sus entidades
+  HTML) y recién después interpreta la sintaxis Markdown, así que aunque la
+  respuesta del LLM contenga código HTML o intente inyectar algo, nunca se
+  ejecuta — solo se muestra como texto.
+- **Ventana más grande**: `CHARACTER_WIDTH`/`CHARACTER_HEIGHT` en
+  `main.js` pasaron de 260×330 a 380×600 para que la burbuja (ahora de
+  340×400px) tenga espacio cómodo sin quedar apretada ni recortada.
+- **Ocultar el personaje con clic derecho**: además del ícono de la bandeja
+  del sistema, ahora puedes hacer **clic derecho sobre el personaje** para
+  abrir un menú rápido con "Ocultar personaje" y "Salir"
+  (`agent:show-context-menu` en `main.js` + `contextmenu` en
+  `renderer.js`). Si lo ocultas así, para volver a mostrarlo usa el ícono
+  de la bandeja del sistema (menú "Mostrar/Ocultar personaje") — el clic
+  derecho es para ocultarlo rápido cuando estás full-screen o compartiendo
+  pantalla, no reemplaza al tray.
+- Verificado visualmente con capturas automatizadas (Playwright, sin
+  necesidad de `npm install` en este sandbox): el encabezado, las burbujas
+  de mensaje, el renderizado de listas/negrita/cursiva y una URL larga de
+  prueba se ven correctamente sin desbordar el contenedor horizontalmente.
+- **Mensaje de bienvenida y personalidad del agente**: el texto que
+  aparece al abrir la burbuja ahora presenta al agente como "Kevin, un
+  agente de la Javeriana Cali" (`renderer.js`, al final del archivo). Si
+  quieres cambiar el nombre, la institución o el tono, ese es el único
+  lugar que hay que tocar.
+- **Botón de minimizar en el encabezado**: junto al botón de cerrar (✕)
+  ahora hay un ícono "─" estilo Windows (`#bubble-minimize` en
+  `index.html`/`style.css`). A diferencia del botón ✕ (que solo cierra la
+  burbuja y deja el personaje visible), el botón de minimizar oculta **todo
+  el agente** — mismo efecto que "Ocultar personaje" del clic derecho, pero
+  visible y descubrible sin necesidad de saber que existe esa opción. Para
+  volver a mostrarlo, se usa el ícono de la bandeja del sistema (igual que
+  con el clic derecho).

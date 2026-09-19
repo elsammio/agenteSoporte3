@@ -24,5 +24,11 @@ contextBridge.exposeInMainWorld('agentAPI', {
   dragMove: (pos) => ipcRenderer.send('agent:drag-move', pos),
   dragEnd: () => ipcRenderer.send('agent:drag-end'),
 
+  // Menú de clic derecho sobre el personaje (ocultar / salir).
+  showContextMenu: () => ipcRenderer.send('agent:show-context-menu'),
+
+  // Ocultar el personaje directamente (botón "minimizar" de la burbuja).
+  hideAgent: () => ipcRenderer.send('agent:hide'),
+
   quit: () => ipcRenderer.send('app:quit'),
 });

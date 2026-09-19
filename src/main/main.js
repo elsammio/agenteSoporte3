@@ -15,8 +15,12 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, net } = re
 const path = require('node:path');
 
 // Tamaño del "lienzo" donde vive el personaje + su burbuja de chat.
-const CHARACTER_WIDTH = 260;
-const CHARACTER_HEIGHT = 330;
+// Se agrandó (antes 260x330) para que la burbuja tenga espacio real donde
+// mostrar respuestas largas del agente (pasos numerados, listas, etc.)
+// sin quedar apretada. El resto del lienzo sigue siendo transparente y
+// deja pasar los clics al escritorio (ver agent:set-ignore-mouse).
+const CHARACTER_WIDTH = 380;
+const CHARACTER_HEIGHT = 600;
 
 // URL del webhook de PRODUCCIÓN del workflow "Chat del agente" en n8n
 // (la que empieza con /webhook/, no /webhook-test/). Si cambia la IP de tu
@@ -173,6 +177,37 @@ ipcMain.on('agent:drag-move', (_event, { mouseX, mouseY }) => {
 
 ipcMain.on('agent:drag-end', () => {
   dragOrigin = null;
+});
+
+// --- Menú rápido con clic derecho sobre el personaje ---
+//
+// Forma rápida y visible de "ocultarlo cuando no lo necesites" sin tener
+// que buscar el ícono en la bandeja del sistema. Para volver a mostrarlo,
+// se usa el ícono de la bandeja (clic simple, o el menú "Mostrar personaje").
+ipcMain.on('agent:show-context-menu', () => {
+  if (!mainWindow) return;
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Ocultar personaje',
+      click: () => mainWindow?.hide(),
+    },
+    { type: 'separator' },
+    {
+      label: 'Salir',
+      click: () => app.quit(),
+    },
+  ]);
+  menu.popup({ window: mainWindow });
+});
+
+// --- Ocultar el personaje desde el botón "minimizar" de la burbuja ---
+//
+// Forma directa y descubrible de ocultar el agente (sin depender de que el
+// usuario sepa que existe el clic derecho). Es el mismo efecto que "Ocultar
+// personaje" del menú de arriba: oculta toda la ventana. Para volver a
+// mostrarlo, se usa el ícono de la bandeja del sistema.
+ipcMain.on('agent:hide', () => {
+  mainWindow?.hide();
 });
 
 // Llama al workflow "Chat del agente" en n8n: le manda el texto que

@@ -10,6 +10,8 @@ const character = document.getElementById('character');
 const characterImg = document.getElementById('character-img');
 const statusBadge = document.getElementById('status-badge');
 const bubble = document.getElementById('bubble');
+const bubbleMinimize = document.getElementById('bubble-minimize');
+const bubbleClose = document.getElementById('bubble-close');
 const bubbleForm = document.getElementById('bubble-form');
 const bubbleInput = document.getElementById('bubble-input');
 const bubbleLog = document.getElementById('bubble-log');
@@ -163,13 +165,91 @@ bubbleInput.addEventListener('blur', () => {
 });
 
 // --- Envío de mensajes ---
-function appendLine(text, from) {
-  const p = document.createElement('p');
-  p.className = from === 'agent' ? 'from-agent' : 'from-user';
-  p.textContent = text;
-  bubbleLog.appendChild(p);
+
+// Escapa HTML antes de insertar cualquier texto vía innerHTML, para que ni
+// el texto del usuario ni la respuesta de n8n/Gemini puedan inyectar
+// etiquetas reales — solo las etiquetas que nosotros mismos generamos
+// abajo (negrita, listas, párrafos) terminan en el HTML final.
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Convierte el texto plano (con Markdown simple, que es como responde
+// Gemini: **negrita**, listas con "-"/"*"/"1.") a HTML legible dentro de
+// la burbuja, en vez de mostrar los asteriscos literales. Soporta lo
+// esencial: negrita, cursiva, listas con viñetas, listas numeradas y
+// párrafos — suficiente para respuestas del agente, sin depender de una
+// librería externa (que no podemos cargar: la app no tiene acceso a
+// internet para bajar paquetes, y el CSP bloquea scripts remotos).
+function renderMarkdownToHtml(rawText) {
+  const lines = escapeHtml(rawText).split('\n');
+  const htmlParts = [];
+  let listType = null; // 'ul' | 'ol' | null
+  let paragraphLines = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length) {
+      htmlParts.push(`<p>${paragraphLines.join('<br>')}</p>`);
+      paragraphLines = [];
+    }
+  };
+  const closeList = () => {
+    if (listType) {
+      htmlParts.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+  const inlineFormat = (line) =>
+    line
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') // **negrita**
+      .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>'); // *cursiva*
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const bulletMatch = line.match(/^[-*]\s+(.*)/);
+    const orderedMatch = line.match(/^\d+[.)]\s+(.*)/);
+
+    if (bulletMatch) {
+      flushParagraph();
+      if (listType !== 'ul') { closeList(); htmlParts.push('<ul>'); listType = 'ul'; }
+      htmlParts.push(`<li>${inlineFormat(bulletMatch[1])}</li>`);
+    } else if (orderedMatch) {
+      flushParagraph();
+      if (listType !== 'ol') { closeList(); htmlParts.push('<ol>'); listType = 'ol'; }
+      htmlParts.push(`<li>${inlineFormat(orderedMatch[1])}</li>`);
+    } else if (line === '') {
+      closeList();
+      flushParagraph();
+    } else {
+      closeList();
+      paragraphLines.push(inlineFormat(line));
+    }
+  }
+  closeList();
+  flushParagraph();
+  return htmlParts.join('');
+}
+
+// Crea un "globo" de mensaje (estilo WhatsApp) dentro de la burbuja.
+function appendMessage(html, from) {
+  const wrapper = document.createElement('div');
+  wrapper.className = from === 'agent' ? 'msg msg-agent' : 'msg msg-user';
+  wrapper.innerHTML = html;
+  bubbleLog.appendChild(wrapper);
   bubbleLog.scrollTop = bubbleLog.scrollHeight;
-  return p;
+  return wrapper;
+}
+
+function appendUserText(text) {
+  return appendMessage(`<p>${escapeHtml(text)}</p>`, 'user');
+}
+
+function appendAgentText(text) {
+  return appendMessage(renderMarkdownToHtml(text), 'agent');
 }
 
 // Indicador de "escribiendo…" (tres puntos animados) mientras esperamos la
@@ -178,8 +258,8 @@ function appendLine(text, from) {
 let typingIndicatorEl = null;
 
 function showTypingIndicator() {
-  typingIndicatorEl = document.createElement('p');
-  typingIndicatorEl.className = 'from-agent typing-indicator';
+  typingIndicatorEl = document.createElement('div');
+  typingIndicatorEl.className = 'msg msg-agent typing-indicator';
   typingIndicatorEl.innerHTML = '<span></span><span></span><span></span>';
   bubbleLog.appendChild(typingIndicatorEl);
   bubbleLog.scrollTop = bubbleLog.scrollHeight;
@@ -197,7 +277,7 @@ bubbleForm.addEventListener('submit', async (event) => {
   const text = bubbleInput.value.trim();
   if (!text) return;
 
-  appendLine(text, 'user');
+  appendUserText(text);
   bubbleInput.value = '';
 
   setCharacterState('thinking');
@@ -205,7 +285,7 @@ bubbleForm.addEventListener('submit', async (event) => {
   try {
     const response = await window.agentAPI.sendMessage(text);
     removeTypingIndicator();
-    appendLine(response.text, 'agent');
+    appendAgentText(response.text);
 
     // main.js prefija con "⚠️" los mensajes que en realidad son errores de
     // conexión (ver agent:send-message), así que el personaje reacciona
@@ -214,11 +294,32 @@ bubbleForm.addEventListener('submit', async (event) => {
     setCharacterState(isError ? 'error' : 'speaking', { autoResetMs: isError ? 1600 : 1800 });
   } catch (err) {
     removeTypingIndicator();
-    appendLine('Ocurrió un error al contactar al agente.', 'agent');
+    appendAgentText('Ocurrió un error al contactar al agente.');
     setCharacterState('error', { autoResetMs: 1600 });
   }
 });
 
+// --- Cerrar la burbuja desde su propio botón (además de clic en el personaje) ---
+bubbleClose.addEventListener('click', () => {
+  bubble.classList.add('hidden');
+});
+
+// --- Minimizar: oculta todo el agente (personaje + burbuja), no solo la
+// burbuja. Es el mismo efecto que el clic derecho, pero como ícono visible
+// (la rayita "_" típica de Windows) es mucho más fácil de descubrir. ---
+bubbleMinimize.addEventListener('click', () => {
+  bubble.classList.add('hidden');
+  window.agentAPI.hideAgent();
+});
+
+// --- Clic derecho sobre el personaje: menú para ocultarlo o salir ---
+// Forma rápida de "ocultarlo cuando no lo necesites" sin tener que ir a
+// buscar el ícono en la bandeja del sistema.
+character.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  window.agentAPI.showContextMenu();
+});
+
 // Mensaje de bienvenida + pequeña animación de saludo al arrancar.
-appendLine('¡Hola! Ya estoy conectado a tu base de conocimiento — arrástrame o escríbeme algo cuando quieras.', 'agent');
+appendAgentText('¡Hola! Soy Kevin, un agente de la Javeriana Cali. ¿En qué puedo ayudarte hoy?');
 setCharacterState('greeting', { autoResetMs: 1400 });
