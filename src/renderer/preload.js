@@ -30,5 +30,24 @@ contextBridge.exposeInMainWorld('agentAPI', {
   // Ocultar el personaje directamente (botón "minimizar" de la burbuja).
   hideAgent: () => ipcRenderer.send('agent:hide'),
 
+  // Avisos de la "caminata" de entrada (ver WALK_ENTRANCE en main.js): el
+  // proceso principal desliza la ventana real por el escritorio y nos
+  // avisa cuándo empieza y cuándo termina, para sincronizar la pose y la
+  // animación del personaje con el movimiento real de la ventana. No
+  // exponemos ipcRenderer.on directamente (por seguridad); envolvemos cada
+  // evento en su propia función para que el renderer solo pueda escuchar,
+  // nunca mandar eventos arbitrarios de vuelta.
+  onWalkStart: (callback) => ipcRenderer.on('agent:walk-start', () => callback()),
+  onWalkEnd: (callback) => ipcRenderer.on('agent:walk-end', () => callback()),
+
+  // Abrir un enlace externo (p. ej. wa.me) en el navegador/WhatsApp del
+  // sistema, nunca dentro de la propia ventana de la app. main.js valida
+  // el dominio antes de abrir nada (ver agent:open-external-link).
+  openExternalLink: (url) => ipcRenderer.send('agent:open-external-link', url),
+
+  // Nombre de usuario de Windows (ver OS_USER_NAME en main.js), para
+  // personalizar el saludo inicial en el renderer.
+  getUserName: () => ipcRenderer.invoke('agent:get-user-name'),
+
   quit: () => ipcRenderer.send('app:quit'),
 });

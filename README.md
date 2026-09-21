@@ -140,18 +140,40 @@ quites esa línea de configuración).
   saludando) lo ideal es tener varias imágenes/sprites (uno por pose) y
   hacer que `renderer.js` cambie el `src` de `#character-img` según el
   estado; puedo ayudarte a prepararlas cuando las tengas.
-- **Poses y expresiones**: el personaje ahora tiene 6 "estados" que cambian
+- **Poses y expresiones**: el personaje ahora tiene 7 "estados" que cambian
   su animación, el color de su brillo y a veces su pose, según lo que está
   pasando (todo en `renderer.js`, función `setCharacterState`):
 
   | Estado | Cuándo se activa | Pose | Brillo | Insignia |
   |---|---|---|---|---|
   | `idle` | En reposo | De frente | — | — |
-  | `greeting` | Al abrir la app (una vez) | De frente | Dorado | ✨ |
+  | `walking` | Mientras la ventana "camina" hacia su posición al arrancar | De perfil (mirando a la izquierda) | Celeste tenue | — |
+  | `greeting` | Al llegar a su posición (una vez) | De frente | Dorado | ✨ |
   | `listening` | El usuario tiene el foco en el cuadro de texto | De perfil (mirando a la izquierda) | Celeste | ✏️ |
   | `thinking` | Esperando la respuesta de n8n | De perfil (mirando a la izquierda) | Violeta | 💭 |
   | `speaking` | La respuesta llegó bien | De frente | Celeste pulsante | — |
   | `error` | Falló la conexión con n8n | De frente | Rojo + sacudida | ⚠️ |
+
+- **Caminata de entrada al arrancar**: en vez de aparecer de golpe, la
+  ventana arranca un poco fuera del borde derecho de la pantalla y se
+  desliza en línea recta hasta su posición final de siempre (abajo a la
+  derecha), como si el pavo entrara caminando al escritorio. Esto **no** es
+  una animación CSS dentro de la ventana — es la ventana real la que se
+  mueve, paso a paso, llamando a `setPosition()` desde `main.js`
+  (`WALK_ENTRANCE`/`animateWalkIn()`), con una desaceleración suave al
+  final para que la llegada se sienta natural. Mientras camina, el
+  personaje usa la pose de perfil con un rebote rápido tipo "pasos"
+  (`.state-walking` en `style.css`, reutiliza la misma imagen de perfil que
+  ya teníamos — no hicieron falta fotogramas nuevos de las patas). Cuando
+  la ventana llega a su lugar, `main.js` le avisa al renderer por IPC
+  (`agent:walk-start` / `agent:walk-end`, expuestos en `preload.js` como
+  `onWalkStart`/`onWalkEnd`) y recién ahí aparece el saludo — así el
+  mensaje de bienvenida no sale antes de que el personaje "llegue". Si
+  alguna vez quieres desactivar la caminata (por ejemplo para pruebas),
+  basta con poner `WALK_ENTRANCE.enabled = false` en `main.js`; el
+  personaje volverá a aparecer directamente en su posición final, y el
+  saludo sigue funcionando igual (hay una red de seguridad de 2.5s en
+  `renderer.js` por si el evento de "fin de caminata" no llegara).
 
   La pose "de perfil" (`assets/peacock-thinking.png`) sale de la segunda
   imagen que nos pasaste (la misma ave, de costado) — le recorté el fondo
@@ -241,3 +263,196 @@ mensajería real, no como una caja de texto genérica:
   visible y descubrible sin necesidad de saber que existe esa opción. Para
   volver a mostrarlo, se usa el ícono de la bandeja del sistema (igual que
   con el clic derecho).
+
+## 7. Conectar con un agente humano por WhatsApp cuando el bot no sabe la respuesta
+
+Cuando el agente no encuentra la respuesta en la base de conocimiento, ahora
+puede ofrecerle al usuario un botón para chatear por WhatsApp con un agente
+humano. Esto se construyó en dos mitades: la app (ya lista) y el workflow de
+n8n (pendiente de que configures tu número — ver más abajo).
+
+**Lado de la app (ya implementado y probado):**
+
+- El parser de Markdown (`renderMarkdownToHtml` en `renderer.js`) ahora
+  entiende enlaces `[texto](https://...)` y los convierte en un botón
+  verde estilo WhatsApp (clase `.msg-link` en `style.css`), no en un link
+  de texto azul subrayado — para que se note que es una acción.
+- Un enlace normal navegaría **toda la ventana de la app** hacia esa URL,
+  rompiendo el personaje flotante. Por eso el clic se intercepta
+  (`bubbleLog.addEventListener('click', ...)` en `renderer.js`) y en vez de
+  navegar, le pide al proceso principal que abra la URL en el
+  navegador/WhatsApp del propio sistema operativo (`shell.openExternal()`
+  en `main.js`, vía el canal `agent:open-external-link`).
+- **Seguridad**: el texto de las respuestas lo genera un LLM a partir de tu
+  base de conocimiento — no es algo en lo que haya que confiar a ciegas.
+  Antes de abrir cualquier URL, `main.js` valida que sea `https://` y que
+  el dominio esté en una lista blanca (`wa.me`, `api.whatsapp.com`,
+  `chat.whatsapp.com`); cualquier otra cosa se ignora y queda registrada en
+  consola en vez de abrirse. Así, aunque algún día un documento de la base
+  de conocimiento viniera con contenido raro/manipulado, no puede hacer que
+  la app abra sitios arbitrarios.
+- Verificado con Playwright: el botón se renderiza con el enlace correcto,
+  el clic dispara la apertura externa con la URL exacta, y la ventana de la
+  app nunca navega fuera de `index.html`.
+
+**Lado de n8n (esto sí lo tienes que configurar tú, no tengo acceso a tu instancia):**
+
+1. Abre el nodo **"Question and Answer Chain"** → pestaña **Parameters** →
+   en **Options** agrega **"System Prompt Template"** (si no existe ya) con
+   instrucciones como:
+
+   ```
+   Eres Kevin, un agente virtual de la Javeriana Cali. Responde
+   ÚNICAMENTE con base en el contexto proporcionado (la base de
+   conocimiento). Si la pregunta del usuario no se puede responder con
+   ese contexto, responde EXACTAMENTE con esta palabra y nada más:
+   SIN_INFORMACION
+   ```
+
+   La palabra clave exacta (`SIN_INFORMACION`) es lo que usamos después
+   para detectar programáticamente que el modelo no supo la respuesta —
+   es mucho más confiable que tratar de adivinar por frases sueltas como
+   "no sé" o "no tengo información", que varían mucho.
+
+2. Inserta un nodo **Code** entre "Question and Answer Chain" y "Respond to
+   Webhook" (el mismo tipo de nodo que ya usaste para separar los PDFs
+   múltiples) con algo así:
+
+   ```javascript
+   const WHATSAPP_NUMBER = '57XXXXXXXXXX'; // tu número con indicativo de país, sin "+" ni espacios
+   const item = $input.first();
+   const answer = (item.json.response || '').trim();
+
+   if (answer.includes('SIN_INFORMACION')) {
+     const prefilledMessage = encodeURIComponent(
+       'Hola, estaba hablando con el asistente virtual de la Javeriana Cali y necesito ayuda con una pregunta que no pudo resolver.'
+     );
+     const whatsappUrl = `https://wa.me/${WHATSAPP_NUMBER}?text=${prefilledMessage}`;
+     return [{
+       json: {
+         response: `No encontré información sobre eso en mi base de conocimiento. ¿Quieres que te conecte con un agente humano?\n\n[Chatear por WhatsApp](${whatsappUrl})`,
+       },
+     }];
+   }
+
+   return [{ json: { response: answer } }];
+   ```
+
+   Reemplaza `WHATSAPP_NUMBER` por el número real del agente humano (con
+   indicativo de país, solo dígitos — por ejemplo `573001234567` para
+   Colombia). El texto del mensaje prellenado también lo puedes ajustar a
+   tu gusto.
+
+3. No hace falta tocar el nodo "Respond to Webhook": sigue leyendo
+   `$json.response` como ya lo tenía, y el Code node de arriba mantiene ese
+   mismo nombre de campo.
+
+**Por qué no esperamos un "sí"/"no" del usuario antes de mostrar el enlace:**
+como cada mensaje que manda la app es una llamada HTTP independiente (el
+workflow no guarda memoria de la conversación), agregar una confirmación
+tipo "¿quieres que te conecte? [sí/no]" habría requerido meter un sistema
+de sesión/memoria en n8n — bastante más trabajo y más frágil. En su lugar,
+el botón de WhatsApp aparece directamente junto con el mensaje de "no
+encontré información": el usuario decide si lo usa o no con un solo clic,
+que es funcionalmente lo mismo que confirmar que sí quiere que lo
+conectes, sin la ida y vuelta.
+
+## 8. "¿Con quién está hablando el agente?" (memoria de la conversación + nombre)
+
+Hasta ahora cada mensaje que manda la app llegaba a n8n como una llamada
+HTTP totalmente independiente: sin nombre de usuario y sin memoria de lo
+que se había hablado antes (por eso, en la sección anterior, no podíamos
+esperar un "sí/no" del usuario). Esto agrega las dos cosas.
+
+**Lado de la app (ya implementado y probado):**
+
+- Al arrancar, `main.js` genera un `CONVERSATION_SESSION_ID` (un UUID,
+  `crypto.randomUUID()`) una sola vez. Ese mismo ID viaja con **todos** los
+  mensajes de esa ejecución de la app — es lo que le permite a n8n saber
+  qué mensajes pertenecen a la misma conversación. Si cierras y vuelves a
+  abrir la app, se genera uno nuevo y la conversación "empieza de cero"
+  (es una decisión simple a propósito; si más adelante quieres que la
+  memoria sobreviva a reinicios de la app, ese ID se podría guardar en
+  disco en vez de generarse en memoria — no es necesario por ahora).
+- También se lee `OS_USER_NAME` (`os.userInfo().username`, el nombre de
+  usuario de Windows de quien está usando el equipo — el mismo que ya se
+  ve en el Explorador de archivos). No es un dato sensible ni sale de tu
+  red local: solo viaja a tu propio servidor n8n.
+- El body que `main.js` le manda al webhook de n8n en cada mensaje ahora
+  es:
+
+  ```json
+  { "message": "texto que escribió el usuario", "sessionId": "uuid-...", "userName": "nombre.usuario" }
+  ```
+
+  (antes solo mandaba `message`).
+- El saludo inicial (`greetOnce()` en `renderer.js`) ahora le pregunta al
+  proceso principal el nombre de usuario (`window.agentAPI.getUserName()`,
+  vía el nuevo canal `agent:get-user-name`) y, si lo consigue, saluda con
+  él: *"¡Hola, `<usuario>`! Soy Kevin..."*. Si por lo que sea no lo
+  consigue a tiempo, usa el saludo genérico de siempre — nunca se queda
+  sin saludar por esto. Verificado con Playwright.
+
+**Lado de n8n (esto sí lo tienes que configurar tú):**
+
+1. **Memoria de la conversación** — agrega un nodo de memoria conectado al
+   "Question and Answer Chain":
+   - Busca en el buscador de nodos **"Window Buffer Memory"** (o "Simple
+     Memory", el nombre exacto varía un poco según la versión de n8n).
+   - Arrástralo al canvas. Va a aparecer con un conector especial de tipo
+     "Memory" (línea punteada, distinta a las flechas normales) — conéctalo
+     a la entrada de memoria del nodo "Question and Answer Chain" (el
+     mismo lugar donde ya tienes conectados el "Google Gemini Chat Model"
+     como Model y el "Vector Store Retriever" como Retriever; la memoria es
+     una tercera entrada del mismo tipo, al lado de esas dos).
+   - Abre el nodo de memoria y en **"Session ID"** cambia el tipo a
+     **"Define below"** (o "Custom Key", según la versión) y pon esta
+     expresión para que use el `sessionId` que ahora manda la app:
+
+     ```
+     {{ $('Webhook').item.json.body.sessionId }}
+     ```
+
+   - Guarda. Con esto, mientras la app siga abierta (mismo `sessionId` en
+     todos los mensajes), el modelo va a recibir automáticamente el
+     historial reciente de la conversación junto con cada pregunta nueva
+     — ya no hace falta repetir contexto que ya diste antes.
+
+2. **Que el agente sepa el nombre de quien le escribe** — el `userName` ya
+   llega en `$json.body.userName` de cada request al Webhook. Para que el
+   modelo lo use, la forma más simple es incluirlo en el mensaje que le
+   mandas al chain. Abre "Question and Answer Chain" → **Parameters** →
+   campo **"Prompt (User Message)"**, y cámbialo de:
+
+   ```
+   {{ $json.body.message }}
+   ```
+
+   a algo como:
+
+   ```
+   [Usuario: {{ $json.body.userName }}] {{ $json.body.message }}
+   ```
+
+   Y opcionalmente agrega una línea al **System Prompt Template** (el
+   mismo campo donde pegaste la instrucción de `SIN_INFORMACION` en la
+   sección anterior) para que sepa qué hacer con ese dato, por ejemplo:
+
+   ```
+   Cada mensaje del usuario viene precedido de "[Usuario: <nombre>]" —
+   puedes usar ese nombre para dirigirte a la persona de forma cercana,
+   pero no hace falta repetirlo en cada respuesta.
+   ```
+
+   Recuerda: el "Prompt must include a 'context' variable" que vimos antes
+   aplica al **System Prompt Template**, no a este campo — aquí no hay
+   restricción de placeholders obligatorios.
+
+**Qué NO hace esto:** el `OS_USER_NAME` es el usuario de Windows del
+computador, no necesariamente el nombre real de la persona ni su
+identidad institucional (código de estudiante, correo, etc.) — es una
+identificación "de cortesía", útil para personalizar el trato, no para
+verificar quién es realmente. Si más adelante necesitas saber con certeza
+quién es la persona (por ejemplo para autenticar contra un directorio de
+la universidad), eso ya es un flujo distinto y más involucrado — avísame
+si llegas a necesitarlo.

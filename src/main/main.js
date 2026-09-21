@@ -11,8 +11,10 @@
 // El resultado: en pantalla solo se ve el personaje (dibujado en HTML/CSS/SVG
 // con fondo transparente), nunca un rectángulo blanco ni una ventana "normal".
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, net } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, net, shell } = require('electron');
 const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
 
 // Tamaño del "lienzo" donde vive el personaje + su burbuja de chat.
 // Se agrandó (antes 260x330) para que la burbuja tenga espacio real donde
@@ -26,6 +28,46 @@ const CHARACTER_HEIGHT = 600;
 // (la que empieza con /webhook/, no /webhook-test/). Si cambia la IP de tu
 // servidor o el path del webhook, solo hay que actualizar esta línea.
 const AGENT_WEBHOOK_URL = 'http://192.168.105.129:5678/webhook/agente-chat';
+
+// --- "¿Con quién está hablando el agente?" ---
+//
+// Dos datos que mandamos a n8n junto con cada mensaje para que el agente
+// pueda (a) mantener el hilo de la conversación y (b) saber el nombre de
+// quien le escribe. Ver Sección 8 del README para la configuración del
+// lado de n8n (nodo de memoria + uso del nombre en el prompt).
+//
+// - CONVERSATION_SESSION_ID: identifica ESTA conversación. Se genera una
+//   sola vez, al arrancar la app, y es el mismo para todos los mensajes
+//   mientras el agente siga abierto — así n8n puede usarlo como clave de
+//   memoria (Window Buffer Memory) y recordar lo ya hablado. Si cierras y
+//   vuelves a abrir la app, se genera uno nuevo y la conversación "empieza
+//   de cero" (es una decisión de diseño simple; si más adelante quieres
+//   que la memoria sobreviva a reinicios de la app, este valor se puede
+//   guardar en disco con electron-store o similar en vez de generarse en
+//   memoria).
+// - OS_USER_NAME: el nombre de usuario de Windows de la persona que está
+//   usando el computador (el mismo que ya ve en el Explorador de archivos
+//   o el menú de inicio). No es un dato sensible ni sale de tu red local
+//   — solo viaja a tu propio servidor n8n. Le sirve al agente para
+//   dirigirse a la persona por su nombre si así lo configuras en el
+//   System Prompt Template.
+const CONVERSATION_SESSION_ID = crypto.randomUUID();
+const OS_USER_NAME = os.userInfo().username;
+
+// --- "Caminata" de entrada al arrancar la app ---
+//
+// En vez de aparecer de golpe ya en su posición final, la ventana entera
+// arranca un poco más a la derecha (fuera del borde visible de la
+// pantalla) y se desliza hasta su lugar de siempre — como si el pavo
+// entrara caminando al escritorio. No animamos solo la imagen dentro de
+// la ventana: movemos la ventana real con setPosition(), para que la
+// sensación sea la de caminar por el escritorio, no dentro de una cajita.
+const WALK_ENTRANCE = {
+  enabled: true,
+  durationMs: 1300, // duración total de la caminata
+  steps: 45, // más pasos = más fluido (a costa de más llamadas a setPosition)
+  startOffsetPx: 320, // cuánto más a la derecha (fuera de pantalla) empieza
+};
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
@@ -42,11 +84,15 @@ function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
 
+  const finalX = screenWidth - CHARACTER_WIDTH - 40;
+  const finalY = screenHeight - CHARACTER_HEIGHT - 40;
+  const startX = WALK_ENTRANCE.enabled ? finalX + WALK_ENTRANCE.startOffsetPx : finalX;
+
   mainWindow = new BrowserWindow({
     width: CHARACTER_WIDTH,
     height: CHARACTER_HEIGHT,
-    x: screenWidth - CHARACTER_WIDTH - 40,
-    y: screenHeight - CHARACTER_HEIGHT - 40,
+    x: startX,
+    y: finalY,
 
     // --- El truco técnico de la ventana "suelta" ---
     frame: false,             // sin barra de título ni bordes
@@ -78,7 +124,11 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    if (WALK_ENTRANCE.enabled) {
+      animateWalkIn(startX, finalX, finalY);
+    } else {
+      mainWindow.show();
+    }
   });
 
   // Por defecto TODA la ventana recibe clics. Como el personaje no ocupa
@@ -89,6 +139,43 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+/**
+ * Desliza la ventana desde `startX` hasta `finalX` (mismo `finalY` todo el
+ * tiempo, camina en línea recta por el borde inferior) en pasos cortos, con
+ * una desaceleración suave al final (ease-out) para que la "llegada" se
+ * sienta natural en vez de frenar en seco. Le avisa al renderer por IPC
+ * cuándo empieza y cuándo termina, para que sincronice la pose de perfil +
+ * animación de pasos con el movimiento real de la ventana.
+ */
+function animateWalkIn(startX, finalX, finalY) {
+  if (!mainWindow) return;
+
+  mainWindow.show();
+  mainWindow.webContents.send('agent:walk-start');
+
+  const { steps, durationMs } = WALK_ENTRANCE;
+  const stepMs = durationMs / steps;
+  let currentStep = 0;
+
+  const tick = () => {
+    if (!mainWindow) return; // la ventana se cerró a mitad de la animación
+
+    currentStep += 1;
+    const t = currentStep / steps;
+    const eased = 1 - (1 - t) * (1 - t); // ease-out: rápido al inicio, suave al llegar
+    const x = Math.round(startX + (finalX - startX) * eased);
+    mainWindow.setPosition(x, finalY);
+
+    if (currentStep >= steps) {
+      mainWindow.webContents.send('agent:walk-end');
+      return;
+    }
+    setTimeout(tick, stepMs);
+  };
+
+  setTimeout(tick, stepMs);
 }
 
 function createTray() {
@@ -210,6 +297,41 @@ ipcMain.on('agent:hide', () => {
   mainWindow?.hide();
 });
 
+// --- Abrir enlaces externos (p. ej. el botón de WhatsApp) con seguridad ---
+//
+// El texto de las respuestas del agente lo genera un LLM (Gemini) a partir
+// de tu base de conocimiento — no es contenido en el que confiemos a
+// ciegas. Antes de abrir cualquier URL en el navegador/WhatsApp del
+// sistema, validamos que sea https y que el dominio sea uno de WhatsApp;
+// cualquier otra cosa se ignora (y queda registrada en consola) en vez de
+// abrirse. Así, aunque algún día el contenido de la base de conocimiento
+// esté "envenenado" con instrucciones raras, no puede hacer que la app
+// abra sitios arbitrarios.
+const ALLOWED_EXTERNAL_LINK_HOSTS = ['wa.me', 'api.whatsapp.com', 'chat.whatsapp.com'];
+
+ipcMain.on('agent:open-external-link', (_event, url) => {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    console.warn('[agent:open-external-link] URL inválida, ignorada:', url);
+    return;
+  }
+
+  if (parsed.protocol !== 'https:' || !ALLOWED_EXTERNAL_LINK_HOSTS.includes(parsed.hostname)) {
+    console.warn('[agent:open-external-link] Dominio no permitido, ignorado:', url);
+    return;
+  }
+
+  shell.openExternal(parsed.toString());
+});
+
+// El renderer pregunta el nombre de usuario de Windows para personalizar
+// el saludo inicial (ver greetOnce() en renderer.js). Se expone como
+// ipcMain.handle (en vez de mandarlo directo en el HTML) para tener un
+// solo lugar donde se calcula OS_USER_NAME.
+ipcMain.handle('agent:get-user-name', () => OS_USER_NAME);
+
 // Llama al workflow "Chat del agente" en n8n: le manda el texto que
 // escribió el usuario en la burbuja y espera de vuelta { text: "..." }.
 // n8n internamente busca en Qdrant (base de conocimiento) y genera la
@@ -234,7 +356,11 @@ ipcMain.handle('agent:send-message', async (_event, userText) => {
     const response = await net.fetch(AGENT_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: userText }),
+      body: JSON.stringify({
+        message: userText,
+        sessionId: CONVERSATION_SESSION_ID,
+        userName: OS_USER_NAME,
+      }),
       signal: controller.signal,
     });
 

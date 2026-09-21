@@ -110,16 +110,26 @@ body {
   filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 16px rgba(167, 139, 250, 0.9));
 }
 
-/* Las poses "de perfil" (thinking/listening) son más altas que anchas en
- * proporción a la de frente — a los 210px de ancho normales, se meten
- * detrás de la burbuja de chat. Achicamos el ancho solo para esas dos
+/* Las poses "de perfil" (thinking/listening/walking) son más altas que
+ * anchas en proporción a la de frente — a los 210px de ancho normales, se
+ * meten detrás de la burbuja de chat. Achicamos el ancho solo para esas
  * poses para que ocupen aproximadamente la misma altura en pantalla que
  * la pose de frente, y la transición de #character (arriba) hace que el
  * cambio de tamaño se vea suave en vez de un salto brusco.
  */
 #character.state-thinking,
-#character.state-listening {
+#character.state-listening,
+#character.state-walking {
   width: 160px;
+}
+
+/* Caminando: se reproduce mientras main.js desliza la ventana real por el
+ * escritorio (ver WALK_ENTRANCE). El rebote es más rápido y más marcado
+ * que el "bob" de reposo, simulando el vaivén de dar pasos — sin necesitar
+ * fotogramas nuevos de las patas, solo la pose de perfil que ya teníamos. */
+#character.state-walking #character-img {
+  animation: walk-bounce 0.4s ease-in-out infinite;
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 12px rgba(56, 189, 248, 0.6));
 }
 
 /* Hablando: la respuesta llegó bien. */
@@ -146,6 +156,11 @@ body {
 @keyframes think-sway {
   0%, 100% { transform: rotate(-3deg) translateY(0); }
   50%      { transform: rotate(3deg) translateY(-6px); }
+}
+
+@keyframes walk-bounce {
+  0%, 100% { transform: translateY(0) rotate(0deg) scale(1.02); }
+  50%      { transform: translateY(-9px) rotate(-2deg) scale(1.02); }
 }
 
 @keyframes greet-bounce {
@@ -334,6 +349,35 @@ body {
 }
 .msg ul:last-child, .msg ol:last-child {
   margin-bottom: 0;
+}
+
+/* Enlaces dentro de una respuesta del agente (hoy, únicamente el botón de
+ * "conectar por WhatsApp" cuando no encuentra la respuesta en la base de
+ * conocimiento). Se ven como un botoncito, no como un link de texto azul
+ * subrayado, para que se note que es una acción y no solo una referencia. */
+.msg-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 7px 14px;
+  background: #25d366; /* verde característico de WhatsApp */
+  color: #ffffff;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 12.5px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.msg-link::before {
+  content: '💬';
+  font-size: 12px;
+}
+
+.msg-link:hover {
+  background: #1fb959;
 }
 
 /* Puntitos animados mientras esperamos la respuesta de n8n. */

@@ -40,6 +40,7 @@ const POSE_IMAGES = {
   thinking: PROFILE_POSE,
   speaking: FRONT_POSE,
   error: FRONT_POSE,
+  walking: PROFILE_POSE, // de perfil también al caminar: se ve natural avanzando de lado
 };
 
 // Precargamos todas las imágenes al arrancar para que el primer cambio de
@@ -59,7 +60,7 @@ const STATE_BADGES = {
   error: '⚠️',
 };
 
-const ALL_STATES = ['idle', 'greeting', 'listening', 'thinking', 'speaking', 'error'];
+const ALL_STATES = ['idle', 'greeting', 'listening', 'thinking', 'speaking', 'error', 'walking'];
 
 let currentState = 'idle';
 let stateResetTimer = null;
@@ -205,6 +206,18 @@ function renderMarkdownToHtml(rawText) {
   };
   const inlineFormat = (line) =>
     line
+      // [texto](https://...) — enlaces tipo Markdown. Se procesan antes que
+      // negrita/cursiva para no confundir asteriscos que pudieran aparecer
+      // en una URL. Solo http(s): nunca "javascript:" ni otros esquemas.
+      // No navegan dentro de la app (ver el listener de clics más abajo):
+      // se abren en el navegador del sistema vía shell.openExternal(), y
+      // main.js valida además que el dominio sea de WhatsApp antes de
+      // abrirlo — el texto del enlace lo genera un LLM, así que no confiamos
+      // ciegamente en él.
+      .replace(
+        /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        '<a href="$2" class="msg-link" data-external-link="true">$1</a>'
+      )
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') // **negrita**
       .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>'); // *cursiva*
 
@@ -251,6 +264,21 @@ function appendUserText(text) {
 function appendAgentText(text) {
   return appendMessage(renderMarkdownToHtml(text), 'agent');
 }
+
+// --- Enlaces dentro de las respuestas del agente (p. ej. el botón de
+// WhatsApp cuando no encuentra la respuesta en la base de conocimiento) ---
+//
+// Un <a href> normal navegaría TODA la ventana de la app hacia esa URL,
+// rompiendo el personaje flotante. En vez de eso, interceptamos el clic y
+// le pedimos al proceso principal que lo abra en el navegador/WhatsApp del
+// sistema (ver agent:open-external-link en main.js, que además valida que
+// el dominio sea de WhatsApp antes de abrir nada).
+bubbleLog.addEventListener('click', (event) => {
+  const link = event.target.closest('a[data-external-link]');
+  if (!link) return;
+  event.preventDefault();
+  window.agentAPI.openExternalLink(link.getAttribute('href'));
+});
 
 // Indicador de "escribiendo…" (tres puntos animados) mientras esperamos la
 // respuesta de n8n — se reemplaza por el mensaje real (o el de error) en
@@ -320,6 +348,47 @@ character.addEventListener('contextmenu', (event) => {
   window.agentAPI.showContextMenu();
 });
 
-// Mensaje de bienvenida + pequeña animación de saludo al arrancar.
-appendAgentText('¡Hola! Soy Kevin, un agente de la Javeriana Cali. ¿En qué puedo ayudarte hoy?');
-setCharacterState('greeting', { autoResetMs: 1400 });
+// --- Entrada "caminando" ---
+//
+// main.js desliza la ventana real desde fuera de la pantalla hasta su
+// posición final (ver WALK_ENTRANCE) y nos avisa cuándo empieza y cuándo
+// termina. Mientras camina, mostramos la pose de perfil con un rebote
+// rápido tipo "pasos" (ver .state-walking en style.css); al llegar,
+// volvemos a la pose de frente y recién ahí saludamos — así el saludo no
+// aparece antes de que el personaje "llegue" a su lugar.
+let hasGreeted = false;
+async function greetOnce() {
+  if (hasGreeted) return;
+  hasGreeted = true;
+
+  // Personalizamos el saludo con el nombre de usuario de Windows cuando lo
+  // tenemos (ver getUserName en preload.js / OS_USER_NAME en main.js). Si
+  // por lo que sea no llega a tiempo o viene vacío, usamos el saludo
+  // genérico de siempre — nunca dejamos al personaje sin saludar por esto.
+  let greeting = '¡Hola! Soy Kevin, un agente de la Javeriana Cali. ¿En qué puedo ayudarte hoy?';
+  try {
+    const userName = await window.agentAPI.getUserName();
+    if (userName && typeof userName === 'string') {
+      greeting = `¡Hola, ${userName}! Soy Kevin, un agente de la Javeriana Cali. ¿En qué puedo ayudarte hoy?`;
+    }
+  } catch {
+    // Sin nombre disponible: seguimos con el saludo genérico.
+  }
+
+  appendAgentText(greeting);
+  setCharacterState('greeting', { autoResetMs: 1400 });
+}
+
+window.agentAPI.onWalkStart(() => {
+  setCharacterState('walking');
+});
+
+window.agentAPI.onWalkEnd(() => {
+  greetOnce();
+});
+
+// Red de seguridad: si por lo que sea el aviso de "fin de caminata" nunca
+// llega (por ejemplo, una versión de main.js sin esta función), igual
+// saludamos después de un tiempo razonable en vez de dejar al personaje
+// callado para siempre.
+setTimeout(greetOnce, 2500);
